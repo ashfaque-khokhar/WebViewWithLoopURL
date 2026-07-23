@@ -1,7 +1,18 @@
 <resources>
     <string name="app_name">WebView Loop</string>
+    <string name="app_subtitle">Automated URL request runner</string>
+    <string name="controls_title">Request Controls</string>
+    <string name="controls_subtitle">Load a URL on repeat or in a timed loop</string>
+    <string name="hint_url">Website URL</string>
+    <string name="hint_loop_count">Loop count</string>
+    <string name="hint_delay_ms">Delay</string>
+    <string name="suffix_times">×</string>
+    <string name="suffix_ms">ms</string>
     <string name="send">Send</string>
-    <string name="start">Start</string>
-    <string name="stop">Stop</string>
+    <string name="start">Auto Loop</string>
+    <string name="stop">Stop Loop</string>
+    <string name="status_idle">Idle</string>
+    <string name="status_auto_running_count">Auto loop running · %1$d loaded</string>
+    <string name="status_timed_running_count">Timed loop running · %1$d / %2$d</string>
     <string name="error_url_required">Enter a URL</string>
 </resources>
