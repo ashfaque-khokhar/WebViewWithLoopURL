@@ -1,7 +1,6 @@
 package com.example.myapplication
 
 import android.content.Context
-import android.content.SharedPreferences
 import android.os.Bundle
 import android.util.Log
 import android.webkit.CookieManager
@@ -11,149 +10,166 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
 import androidx.appcompat.app.AppCompatActivity
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlin.random.Random
-import kotlin.random.nextUInt
-
 
 class MainActivity : AppCompatActivity() {
 
+    private lateinit var webView: WebView
+    private lateinit var edUrl: EditText
+    private lateinit var edLoop: EditText
+    private lateinit var edDelayMs: EditText
+    private lateinit var btnAuto: Button
 
-    private var nLoop: Int = 0
-    private var nSecond: Long = 0
-    var nUrl: String = ""
-    private var autoState: Boolean = true
-    private val sharedPrefFile = "kotlinsharedpreference"
-    private var i: Int = 0
+    private var isAutoLoopRunning = false
+    private var autoLoadCount = 0
+    private var loopJob: Job? = null
+    private var activeUrl: String = DEFAULT_URL
 
+    private val prefs by lazy {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        val edURl = findViewById<EditText>(R.id.edURl)
-        val edLoop = findViewById<EditText>(R.id.edLoop)
-        val edPreSecond = findViewById<EditText>(R.id.edPreSecond)
-        val webView = findViewById<WebView>(R.id.webView)
-        webView.settings.javaScriptEnabled = false
-        webView.settings.setGeolocationEnabled(false)
-        webView.settings.allowContentAccess = false
-        webView.settings.cacheMode = WebSettings.LOAD_NO_CACHE
-        webView.settings.setPluginState(WebSettings.PluginState.OFF)
+        webView = findViewById(R.id.webView)
+        edUrl = findViewById(R.id.edURl)
+        edLoop = findViewById(R.id.edLoop)
+        edDelayMs = findViewById(R.id.edPreSecond)
+        btnAuto = findViewById(R.id.btnAuto)
 
-        val cookieManager = CookieManager.getInstance()
-        cookieManager.setAcceptCookie(false)
-        cookieManager.setAcceptThirdPartyCookies(webView, false)
+        configureWebView(webView)
+        activeUrl = prefs.getString(KEY_URL, DEFAULT_URL) ?: DEFAULT_URL
+        edUrl.setText(activeUrl)
 
-
-        val sharedPreferences: SharedPreferences = this.getSharedPreferences(
-            sharedPrefFile,
-            Context.MODE_PRIVATE
-        )
-        val editor: SharedPreferences.Editor = sharedPreferences.edit()
-        edURl.setText(sharedPreferences.getString("nUrl", "https://www.geeksforgeeks.org/"))
-
-        val btnAuto = findViewById<Button>(R.id.btnAuto)
-        btnAuto.setOnClickListener {
-
-            if (autoState) {
-                btnAuto.text = "Stop"
-                autoState = false
-            } else {
-                btnAuto.text = "Start"
-                autoState = true
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView, url: String) {
+                if (!isAutoLoopRunning) return
+                Log.d(TAG, "auto load #$autoLoadCount -> $url")
+                autoLoadCount++
+                loadUrlWithRandomUserAgent(view, activeUrl)
             }
+        }
 
-            if (edURl.text.isNotEmpty()) {
-                nUrl = edURl.text.toString()
-                editor.putString("nUrl", nUrl)
-                editor.apply()
-                webViewLoadUrl(webView, nUrl)
-            }
+        btnAuto.setOnClickListener { toggleAutoLoop() }
+        findViewById<Button>(R.id.btnSend).setOnClickListener { startTimedLoop() }
+    }
 
-            // Set web view client
-            webView.webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView, url: String) {
-                    if (btnAuto.text == "Stop") {
-                        Log.d("Ashu: ", "$i #$nUrl")
-                        i++
-                        webViewLoadUrl(webView, nUrl)
-                    }
+    private fun toggleAutoLoop() {
+        if (isAutoLoopRunning) {
+            stopAutoLoop()
+            return
+        }
 
+        val url = urlFromInput() ?: return
+        activeUrl = url
+        saveUrl(url)
+        isAutoLoopRunning = true
+        autoLoadCount = 0
+        btnAuto.text = getString(R.string.stop)
+        loadUrlWithRandomUserAgent(webView, url)
+    }
+
+    private fun stopAutoLoop() {
+        isAutoLoopRunning = false
+        btnAuto.text = getString(R.string.start)
+    }
+
+    private fun startTimedLoop() {
+        val url = urlFromInput() ?: return
+        activeUrl = url
+        saveUrl(url)
+
+        val loopCount = edLoop.text.toString().toIntOrNull() ?: DEFAULT_LOOP_COUNT
+        val delayMs = edDelayMs.text.toString().toLongOrNull() ?: DEFAULT_DELAY_MS
+
+        loopJob?.cancel()
+        loopJob = lifecycleScope.launch {
+            repeat(loopCount) { index ->
+                loadUrlWithRandomUserAgent(webView, url)
+                Log.d(TAG, "timed load #$index -> $url")
+                if (index < loopCount - 1) {
+                    delay(delayMs)
                 }
             }
-
         }
-
-        val btnSend = findViewById<Button>(R.id.btnSend)
-        btnSend.setOnClickListener {
-
-
-            nLoop = if (edLoop.text.isNotEmpty()) {
-                edLoop.text.toString().toInt()
-            } else {
-                10
-            }
-
-            nSecond = if (edPreSecond.text.isNotEmpty()) {
-                edPreSecond.text.toString().toLong()
-            } else {
-                1000
-            }
-            if (edURl.text.isNotEmpty()) {
-                nUrl = edURl.text.toString()
-                GlobalScope.launch {
-                    urlLooper(webView, nUrl, nLoop, nSecond)
-                }
-
-            }
-
-        }
-
     }
 
-    private suspend fun urlLooper(webView: WebView, nUrl: String, nLoop: Int, nSecond: Long) {
+    private fun urlFromInput(): String? {
+        val url = edUrl.text.toString().trim()
+        if (url.isEmpty()) {
+            edUrl.error = getString(R.string.error_url_required)
+            return null
+        }
+        return url
+    }
 
-        for (i in 0..nLoop) {
-            withContext(Dispatchers.Main) {
-                webViewLoadUrl(webView, nUrl)
-            }
-            Log.d("Ashu: ", "$nUrl #$i")
-            delay(nSecond) // Delay for 1 second
+    private fun saveUrl(url: String) {
+        prefs.edit().putString(KEY_URL, url).apply()
+    }
+
+    private fun configureWebView(webView: WebView) {
+        webView.settings.apply {
+            javaScriptEnabled = false
+            setGeolocationEnabled(false)
+            allowContentAccess = false
+            cacheMode = WebSettings.LOAD_NO_CACHE
         }
 
+        CookieManager.getInstance().apply {
+            setAcceptCookie(false)
+            setAcceptThirdPartyCookies(webView, false)
+        }
     }
 
-    private fun webViewLoadUrl(webView: WebView, nUrl: String) {
-
-        val randomNum = Random.nextInt(8, 13)
-        val randomNum1 = Random.nextInt(40, 59)
-
-        val randomNum2 = Random.nextFloat()
-
-        val randomNum3 = Random.nextDouble(888.888, 999.999)
-        val randomNum4 = Random.nextDouble(499.0, 599.0).toFloat()
-
-        val randomChar1 = ('A'..'Z').random()
-        val randomChar2 = ('A'..'Z').random()
-        val randomChar3 = ('A'..'Z').random()
-
-        //"Mozilla/5.0 (Linux; Android 10; SM-G970U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.101 Mobile Safari/537.36"
-        val userAgentString = "Mozilla/${randomNum1 + randomNum2}" +
-                "(Linux; Android $randomNum; $randomChar1$randomChar2-$randomChar3$randomNum1$randomChar2$randomChar1) " +
-                "AppleWebKit/$randomNum4" +
-                "(KHTML, like Gecko) Chrome/$randomNum3.$randomNum1 Mobile " +
-                "Safari/$randomNum4"
-        Log.d("Ashu", userAgentString)
-
-        webView.settings.userAgentString = userAgentString
-        webView.loadUrl(nUrl)
-
+    private fun loadUrlWithRandomUserAgent(webView: WebView, url: String) {
+        webView.settings.userAgentString = buildRandomUserAgent()
+        webView.loadUrl(url)
     }
 
+    private fun buildRandomUserAgent(): String {
+        val androidVersion = Random.nextInt(8, 13)
+        val buildNumber = Random.nextInt(40, 59)
+        val webkitPatch = Random.nextDouble(499.0, 599.0).toFloat()
+        val chromeMajor = Random.nextDouble(888.888, 999.999)
+        val mozillaMinor = Random.nextFloat()
+        val model = buildString {
+            append(('A'..'Z').random())
+            append(('A'..'Z').random())
+            append('-')
+            append(('A'..'Z').random())
+            append(buildNumber)
+            append(('A'..'Z').random())
+            append(('A'..'Z').random())
+        }
 
+        return "Mozilla/${buildNumber + mozillaMinor}" +
+            "(Linux; Android $androidVersion; $model) " +
+            "AppleWebKit/$webkitPatch " +
+            "(KHTML, like Gecko) Chrome/$chromeMajor.$buildNumber Mobile " +
+            "Safari/$webkitPatch"
+    }
+
+    override fun onDestroy() {
+        loopJob?.cancel()
+        stopAutoLoop()
+        if (::webView.isInitialized) {
+            webView.destroy()
+        }
+        super.onDestroy()
+    }
+
+    companion object {
+        private const val TAG = "WebViewLoop"
+        private const val PREFS_NAME = "kotlinsharedpreference"
+        private const val KEY_URL = "nUrl"
+        private const val DEFAULT_URL = "https://www.geeksforgeeks.org/"
+        private const val DEFAULT_LOOP_COUNT = 10
+        private const val DEFAULT_DELAY_MS = 1000L
+    }
 }
